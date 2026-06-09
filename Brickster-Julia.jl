@@ -8,7 +8,7 @@ using DataFrames
 using Match
 
 # Functions to be used
-export BricksterClient, list_computes, compute_connect
+export BricksterClient, list_computes, compute_connect, list_schemas, list_schemas
 
 # Creating a struct to pass objects
 Base.@kwdef mutable struct BricksterClient
@@ -110,7 +110,7 @@ function list_catalogs(workspace)
     # Add option to add DataFrame to struct rather than recreate it
 
     # Printing the catalog names
-    print("These are the catalogs in your workspace")
+    print("These are the catalogs in your workspace:")
     for c in catalogs_parsed[:catalogs]
         @printf("%s \n", c[:name])
     end
@@ -118,10 +118,41 @@ function list_catalogs(workspace)
 end
 
 # List the Schemas within a catalog
+function list_schemas(workspace)
 
+    # sending he request
+    schema_response = HTTP.get(
+        "$host_name/api/2.1/unity-catalog/schemas"
+        ,header
+        ,query = ["max_results" => "0"]
+    )
 
-function query_db(workspace :: BricksterClient, query :: String)
+    # Parsing he body
+    schemas_parsed = JSON3.read(schema_response.body)
+    catalog_tuple = [(
+                        name            = c[:name]
+                        ,full_name      = c[:full_name]
+                        ,id             = c[:id]
+                        ,owner          = c[:owner]
+                        ,created_date   = c[:created_at]
+                        ,created_by     = c[:created_by]
+                        ) 
+                    for c in catalogs_parsed[:catalogs]
+                    ]
 
+end
+
+function query_db(workspace :: BricksterClient, query :: String, schema :: String, catalog :: String)
+
+    # Params 
+    body = JSON3.write(Dict(
+        "statement"    => sql,
+        "warehouse_id" => client.compute,       # from your compute_connect step
+        "catalog"      => catalog,
+        "schema"       => schema,
+        "wait_timeout" => "30s",                # wait up to 30s for results
+        "disposition"  => "INLINE"              # return results directly in response
+    ))
 # Sending the request to Databricks
 response = HTTP.post(
     "$host/api/2.0/sql/statements"
