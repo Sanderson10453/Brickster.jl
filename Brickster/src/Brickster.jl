@@ -1,14 +1,13 @@
 module Brickster
 
 # Import modules
-using Printf
 using HTTP
 using JSON3
+using Printf
 using DataFrames
-using Match
 
 # Functions to be used
-export BricksterClient, list_computes, compute_connect, list_schemas, list_schemas, list_tables, query_db
+export BricksterClient, list_computes, compute_connect, list_catalogs, list_schemas, list_tables, query_db
 
 # Creating a struct to pass objects
 Base.@kwdef mutable struct BricksterClient
@@ -26,7 +25,7 @@ function BricksterClient(token, host_name)
     # Creating the headers for the request
     header = [
         "Authorization" => "Bearer $token"
-        "Content-Type" => "application/json"
+        ,"Content-Type" => "application/json"
             ]
 
     # Grabbing Warehouses
@@ -51,10 +50,13 @@ end
 function list_computes(workspace :: BricksterClient)
     # Printing compute names
     @printf("These are the available computes in your warehouse: %s", values(workspace.warehouse_map))
+
+    # TODO: Create DataFrame or Vector of computes
     
 end
 
-function compute_connect(workspace :: BricksterClient, compute_name )
+function compute_connect(workspace :: BricksterClient
+                        ,compute_name :: String )
 
     # Attributes
     compute_match_key = nothing
@@ -83,7 +85,8 @@ function compute_connect(workspace :: BricksterClient, compute_name )
 end
 
 # List the catalogs within a workspace
-function list_catalogs(workspace :: BricksterClient, return_tuple :: Bool = false)
+function list_catalogs(workspace :: BricksterClient
+                        ,return_tuple :: Bool = false)
 
     # Sending the request
     catalog_response = HTTP.get(
@@ -109,7 +112,7 @@ function list_catalogs(workspace :: BricksterClient, return_tuple :: Bool = fals
                         ]
     else
         # Printing the catalog names
-        print("These are the catalogs in your workspace:")
+        println("These are the catalogs in your workspace:")
 
         for c in catalogs_parsed[:catalogs]
             @printf("%s \n", c[:name])
@@ -119,7 +122,9 @@ function list_catalogs(workspace :: BricksterClient, return_tuple :: Bool = fals
 end
 
 # List the Schemas within a catalog
-function list_schemas(workspace :: BricksterClient, catalog :: String, return_tuple :: Bool = false)
+function list_schemas(workspace :: BricksterClient
+                        ,catalog :: String
+                        ,return_tuple :: Bool = false)
 
     # sending the request
     schema_response = HTTP.get(
@@ -167,7 +172,7 @@ function list_tables(workspace :: BricksterClient
 
     # sending he request
     tables_response = HTTP.get(
-        "$host_name/api/2.1/unity-catalog/tables"
+        "$(workspace.host_name)/api/2.1/unity-catalog/tables"
         ,workspace.header
         ,query = [
                     "catalog_name" => "$catalog"
@@ -202,12 +207,20 @@ function list_tables(workspace :: BricksterClient
         end
 end
 
-function query_db(workspace :: BricksterClient, query :: String, schema :: String, catalog :: String)
+function query_db(workspace :: BricksterClient
+                    ,sql_query :: String
+                    ,schema :: String
+                    ,catalog :: String)
+
+    # Error if No Compute
+    if isnothing(workspace.compute)
+        error("No compute selected - please run compute_connect()")
+    end
 
     # Params 
     body = JSON3.write(Dict(
-        "statement"    => query
-        ,"warehouse_id" => client.compute       
+        "statement"    => sql_query
+        ,"warehouse_id" => workspace.compute       
         ,"catalog"      => catalog
         ,"schema"       => schema
         ,"wait_timeout" => "30s"               
