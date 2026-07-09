@@ -7,8 +7,10 @@ authors = ["Spenser Anderson <spenseranderson2@gmail.com>"]
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
 JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 
 [compat]
 DataFrames = "1.8.2"
 HTTP = "2.5.4"
 JSON3 = "1.14.3"
+Printf = "1.11.0"
