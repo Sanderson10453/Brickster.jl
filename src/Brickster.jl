@@ -14,14 +14,27 @@ Base.@kwdef mutable struct BricksterClient
     token :: String         # Required keyword
     host_name :: String     # Required keyword
     header :: Vector{Pair{String, String}}         # Required keyword
-    warehouse_map :: Dict   
-    compute :: Union{String, Nothing} = nothing 
-end 
+    warehouse_map :: Dict
+    compute :: Union{String, Nothing} = nothing
+end
 
+# Function to fix dict parsing from JSON3
+function _parse_field(field)
+    if field isa JSON3.Object
+        return field[:str]
+
+    elseif isnothing(field) # Dealing wirth null values from Databricks
+        return missing
+
+    else
+        return String(field)
+    end
+
+end
 
 # Function to get dict of all computes within a warehouse
 function BricksterClient(token, host_name)
-    
+
     # Creating the headers for the request
     header = [
         "Authorization" => "Bearer $token"
@@ -38,13 +51,13 @@ function BricksterClient(token, host_name)
     warehouses_parsed = JSON3.read(warehouses.body)
     warehouse_map = Dict(w[:id] => w[:name] for w in warehouses_parsed[:warehouses])
 
-    BricksterClient(token = token 
+    BricksterClient(token = token
                     ,host_name = host_name
                     ,header = header
                     ,warehouse_map = warehouse_map
                     ,compute = nothing
                     )
-end 
+end
 
 # Function to list all computes within a warehouse
 function list_computes(workspace :: BricksterClient)
@@ -52,7 +65,7 @@ function list_computes(workspace :: BricksterClient)
     @printf("These are the available computes in your warehouse: %s", values(workspace.warehouse_map))
 
     # TODO: Create DataFrame or Vector of computes
-    
+
 end
 
 function compute_connect(workspace :: BricksterClient
@@ -74,7 +87,7 @@ function compute_connect(workspace :: BricksterClient
     if isnothing(compute_match_key)
         error("No Matching Databricks Compute for: $compute_name")
 
-    else 
+    else
         workspace.compute = compute_match_key
         @printf("This is the compute you selected %s", compute_match_key)
     end
@@ -107,7 +120,7 @@ function list_catalogs(workspace :: BricksterClient
                             ,owner          = c[:owner]
                             ,created_date   = c[:created_at]
                             ,created_by     = c[:created_by]
-                            ) 
+                            )
                         for c in catalogs_parsed[:catalogs]
                         ]
     else
@@ -117,7 +130,7 @@ function list_catalogs(workspace :: BricksterClient
         for c in catalogs_parsed[:catalogs]
             @printf("%s \n", c[:name])
         end
-    end 
+    end
 
 end
 
@@ -148,11 +161,11 @@ function list_schemas(workspace :: BricksterClient
                             ,owner          = sch[:owner]
                             ,created_date   = sch[:created_at]
                             ,created_by     = sch[:created_by]
-                            ) 
+                            )
                         for sch in schemas_parsed[:schemas]
                         ]
-        
-    else 
+
+    else
         println("These are your schemas:")
 
         for sch in schemas_parsed[:schemas]
@@ -177,7 +190,7 @@ function list_tables(workspace :: BricksterClient
         ,query = [
                     "catalog_name" => "$catalog"
                     ,"schema_name" => "$schema"
-                    ,"omit_properties" => "$omit_properties" 
+                    ,"omit_properties" => "$omit_properties"
                     ,"max_results" => "0"
                 ]
     )
@@ -185,7 +198,7 @@ function list_tables(workspace :: BricksterClient
     # Parsing the body
     tables_parsed = JSON3.read(tables_response.body)
 
-    # Printing them 
+    # Printing them
     println("These are the tables in the $catalog catalog...")
     for tbl in tables_parsed[:tables]
         @printf("%s \n", tbl[:full_name])
@@ -200,10 +213,10 @@ function list_tables(workspace :: BricksterClient
                             ,owner          = tbl[:owner]
                             ,created_date   = tbl[:created_at]
                             ,created_by     = tbl[:created_by]
-                ) 
+                )
                 for tbl in tables_parsed[:tables]
                 ]
-        
+
         end
 end
 
@@ -217,14 +230,14 @@ function query_db(workspace :: BricksterClient
         error("No compute selected - please run compute_connect()")
     end
 
-    # Params 
+    # Params
     body = JSON3.write(Dict(
         "statement"    => sql_query
-        ,"warehouse_id" => workspace.compute       
+        ,"warehouse_id" => workspace.compute
         ,"catalog"      => catalog
         ,"schema"       => schema
-        ,"wait_timeout" => "30s"               
-        ,"disposition"  => "INLINE"             
+        ,"wait_timeout" => "30s"
+        ,"disposition"  => "INLINE"
     ))
 
     # Sending the request to Databricks
@@ -245,13 +258,13 @@ function query_db(workspace :: BricksterClient
 
     # Getting the rows
     df_rows = [
-        [field[:str] for field in row] for row in parsed_response[:result][:data_array]
+        [_parse_field(field) for field in row] for row in parsed_response[:result][:data_array]
                 ]
-    
+
     # Creating the df
     df = DataFrame([col => [row[i] for row in df_rows] for (i, col) in enumerate(df_cols)])
 
-    return df 
+    return df
 
 end
 
