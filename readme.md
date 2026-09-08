@@ -1,3 +1,5 @@
+[![CI](https://github.com/Sanderson10453/Brickster.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/Sanderson10453/Brickster.jl/actions/workflows/CI.yml)
+
 # Overview
 Brickster is a library written for R that includes:
     - Wrappers for Databricks APIs
