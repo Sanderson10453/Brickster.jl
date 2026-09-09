@@ -1,6 +1,6 @@
 name = "Brickster"
 uuid = "93721290-e379-4ab3-ae0d-1d15abd83c0f"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Spenser Anderson <spenseranderson2@gmail.com>"]
 
 [deps]
