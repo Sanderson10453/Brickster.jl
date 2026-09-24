@@ -222,8 +222,9 @@ end
 
 function query_db(workspace :: BricksterClient
                     ,sql_query :: String
+                    ,catalog :: String
                     ,schema :: String
-                    ,catalog :: String)
+                    )
 
     # Error if No Compute
     if isnothing(workspace.compute)
