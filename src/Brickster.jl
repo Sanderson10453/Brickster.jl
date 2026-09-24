@@ -246,11 +246,16 @@ function query_db(workspace :: BricksterClient
         "$(workspace.host_name)/api/2.0/sql/statements"
         ,workspace.header
         ,body
-
-    )
+        )
 
     # Parsing the results
     parsed_response = JSON3.read(response.body)
+
+    # If result is still pending, check again
+    if getproperty(parsed_response.status, :state) = "PENDING"
+        statement_id = parsed_response.staement_id
+
+    elseif getproperty(parsed_response.status, :state) = "PENDING"
 
 
     ## Creating a DataFrame
