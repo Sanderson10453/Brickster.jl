@@ -239,7 +239,7 @@ function query_db(workspace :: BricksterClient
         ,"schema"           => schema
         ,"wait_timeout"     => "0s"
         ,"on_wait_timeout"  => "CONTINUE"
-        ,"disposition"      => "INLINE"
+        ,"disposition"      => "EXTERNAL_LINKS"
         ,"format"           => "JSON_ARRAY"
     ))
 
@@ -258,32 +258,13 @@ function query_db(workspace :: BricksterClient
 
 
     ## Creating a DataFrame
-    ## If byte limit reached
-    if getproperty(parsed_response.manifest, :truncated)
-        
-        # Cancel the initial request and resubmit as external 
-        HTTP.post(
-            "$(workspace.host_name)/api/2.0/sql/statements/$(parsed_response.statement_id)/cancel"
-            ,workspace.header
-        )
-        # Sending request as external links
-        parsed_response = _query_db_lf(workspace, parsed_response.statement_id)
-
     # Checking if empty
-    elseif getproperty(parsed_response.manifest, :total_row_count) == 0
+    if getproperty(parsed_response.manifest, :total_row_count) == 0
         println("Query returned no results...")
         return DataFrame()
+
     else
-        # Getting columns
-        df_cols = [col[:name] for col in parsed_response[:manifest][:schema][:columns]]
-
-        # Getting the rows
-        df_rows = [
-            [_parse_field(field) for field in row] for row in parsed_response[:result][:data_array]
-                    ]
-
-        # Creating the df
-        return DataFrame([col => [row[i] for row in df_rows] for (i, col) in enumerate(df_cols)])
+        return _query_db_lf(workspace, parsed_response.statement_id)
     end
 end
 
@@ -342,7 +323,7 @@ function _query_db_lf(workspace :: BricksterClient, statement_id :: String)
         chunk_parsed = JSON3.read(res_chunk.body)
 
         # Adding to list
-        append!(data, chunk_parsed.data_array)
+        append!(data, chunk_parsed)
     end
 
     ## Checking for more chunks
