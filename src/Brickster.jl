@@ -62,7 +62,7 @@ end
 # Function to list all computes within a warehouse
 function list_computes(workspace :: BricksterClient)
     # Printing compute names
-    @printf("These are the available computes in your warehouse: %s", values(workspace.warehouse_map))
+    @printf("These are the available computes in your warehouse: %s \n", values(workspace.warehouse_map))
 
     # TODO: Create DataFrame or Vector of computes
 
@@ -85,11 +85,11 @@ function compute_connect(workspace :: BricksterClient
 
     # Catching if Fails
     if isnothing(compute_match_key)
-        error("No Matching Databricks Compute for: $compute_name")
+        error("No Matching Databricks Compute for: $compute_name \n")
 
     else
         workspace.compute = compute_match_key
-        @printf("This is the compute you selected %s", compute_match_key)
+        @printf("This is the compute you selected %s \n", compute_match_key)
     end
 
     # return updated struct
@@ -256,12 +256,21 @@ function query_db(workspace :: BricksterClient
     # Polling to get results
     parsed_response = _query_db_poll_for_success(workspace, parsed_response.statement_id)
 
-    ## If byte limit reached
-
 
     ## Creating a DataFrame
+    ## If byte limit reached
+    if getproperty(parsed_response.manifest, :truncated)
+        
+        # Cancel the initial request and resubmit as external 
+        HTTP.post(
+            "$(workspace.host_name)/api/2.0/sql/statements/$(parsed_response.statement_id)/cancel"
+            ,workspace.header
+        )
+        # Sending request as external links
+        parsed_response = _query_db_lf(workspace, parsed_response.statement_id)
+
     # Checking if empty
-    if getproperty(parsed_response.manifest, :total_row_count) == 0
+    elseif getproperty(parsed_response.manifest, :total_row_count) == 0
         println("Query returned no results...")
         return DataFrame()
     else
@@ -274,9 +283,7 @@ function query_db(workspace :: BricksterClient
                     ]
 
         # Creating the df
-        df = DataFrame([col => [row[i] for row in df_rows] for (i, col) in enumerate(df_cols)])
-
-        return df
+        return DataFrame([col => [row[i] for row in df_rows] for (i, col) in enumerate(df_cols)])
     end
 end
 
@@ -315,25 +322,21 @@ function _query_db_poll_for_success(workspace :: BricksterClient, statement_id :
     end
 end
 
-function _query_db_lf(workspace :: Brickster, sql_query :: str, catalog :: str, schema :: str, statement_id :: str)
+function _query_db_lf(workspace :: BricksterClient, statement_id :: String)
 
     # Params
     data = []
-    body = JSON3.write(Dict(
-        "statement"         => sql_query
-        ,"warehouse_id"     => workspace.compute
-        ,"catalog"          => catalog
-        ,"schema"           => schema
-        ,"wait_timeout"     => "0s"
-        ,"on_wait_timeout"  => "CONTINUE"
-        ,"disposition"      => "EXTERNAL_LINKS"
-        ,"format"           => "JSON_ARRAY"
-    ))
 
-    # Polling to grab the results
-    parsed_response = _query_db_poll_for_success(workspace, statement_id)
+    # Going to completed request to grab 1st chunk
+    res = HTTP.get("$(workspace.host_name)/api/2.0/sql/statements/$statement_id"
+                                ,workspace.header)
 
-    # Grabbing links for external data
+    parsed_response = JSON3.read(res.body)
+
+    # Need col names from first chunk header
+    df_cols = [col[:name] for col in parsed_response[:manifest][:schema][:columns]]
+
+    # Grabbing links for external data - MAKE A HELPER
     for info in parsed_response.result.external_links
         res_chunk = HTTP.get(info.external_link)
         chunk_parsed = JSON3.read(res_chunk.body)
@@ -342,7 +345,32 @@ function _query_db_lf(workspace :: Brickster, sql_query :: str, catalog :: str, 
         append!(data, chunk_parsed.data_array)
     end
 
-    return data
+    ## Checking for more chunks
+    next_chunk = get(parsed_response.result, :next_chunk_index, nothing)
+
+    # If there are more chunks, grab them
+    while !isnothing(next_chunk)
+        chunk_res = HTTP.get("$(workspace.host_name)/api/2.0/sql/statements/$statement_id/result/chunks/$next_chunk"
+                            ,workspace.header
+                            )
+        chunk_parsed = JSON3.read(chunk_res.body)
+
+        # Creating list of data - MAKE A HELPER
+        for info in chunk_parsed.result.external_links
+            data_res = HTTP.get(info.external_link)
+            data_parsed = JSON3.read(data_res.body)
+            append!(data, data_parsed.data_array)
+        end
+
+        # Check if there's another chunk to exit loop
+        next_chunk = get(chunk_parsed.result, :next_chunk_index, nothing)
+    end
+
+    # Grabbing dataframe rows
+    df_rows = [[_parse_field(field) for field in row] for row in data]
+
+    return DataFrame([col => [row[i] for row in df_rows]
+                        for (i, col) in enumerate(df_cols) ])
 end
 
 end # Module end
