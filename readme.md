@@ -25,7 +25,7 @@ julia> using Brickster
 using Brickster
 
 # Create the client
-client = Brickster(token, host_name)
+client = BricksterClient(token, host_name)
 
 # List the computes
 list_computes(client)
@@ -35,7 +35,7 @@ con = connect_compute(client, "Serverless")
 
 # Create a dataframe from databricks query
 query = "select * from test_catalog.test_schema.table limit 10"
-df = query_db(client, query, "test_schema", "test_catalog)
+df = query_db(client, query, "test_catalog", "test_schema")
 ```
 
 
@@ -48,4 +48,4 @@ df = query_db(client, query, "test_schema", "test_catalog)
 | Unity Catalog - Catalogs | Yes | 0.1 |
 | Unity Catalog - Schemas | Yes | 0.1 |
 | SQL Statements | Yes | 0.1 |
-| Volumes | No | N/A | 
+| Volumes | No | N/A |

@@ -5,7 +5,7 @@ using JSON3
 using DataFrames
 using Brickster
 
-## Helper Function 
+## Helper Function
 function fake_response(body :: Dict)
     return HTTP.Response(
         200
@@ -14,12 +14,12 @@ function fake_response(body :: Dict)
     )
 end
 
-## Fake Data 
+## Fake Data
 fake_token = "token123"
 fake_url      = "http://127.0.0.1:8080"
 fake_query = "select * from dummycatalog.fauxschema.badtable limit 10"
 
-# Warehouse 
+# Warehouse
 fake_warehouse_pl = Dict(
                     "warehouses" => [Dict("id" => "w123"
                                             ,"name" => "Serverless Starter Warehouse")
@@ -47,13 +47,13 @@ fake_tables = Dict(
                         ,"table_id"     => "123abc"
                         ,"owner"        => "user1"
                         ,"created_at"   => "2026-07-01"
-                        ,"created_by"   => "governance@fakedatabricks.net"   
+                        ,"created_by"   => "governance@fakedatabricks.net"
                         )
-                        
+
                         ]
-                    
+
                 )
-# Result 
+# Result
 fake_results_tuple = (
     name            = fake_catalog[:name]
     ,full_name      = fake_catalog[:full_name]
@@ -73,24 +73,34 @@ fake_schemas_pl = Dict(
                             ,"schema_id"     => "s123"
                             ,"owner"        => "user1"
                             ,"created_at"   => "2026-07-01"
-                            ,"created_by"   => "governance@fakedatabricks.net"   
+                            ,"created_by"   => "governance@fakedatabricks.net"
                             )
-                        
+
                                 ]
-                        ) 
+                        )
 
 # Fake HTTP payload
+fake_statement_id = "si123"
+fake_external_data = [["1", "User234"], ["2", "User345"]]
 fake_result = Dict(
-            "status"        => Dict("state" => "SUCCEEDED")
-            ,"manifest"     => Dict("schema" => Dict(
-                                                "columns" => [
-                                                    Dict("name" => "id")
-                                                    ,Dict("name" => "name")
-                                                            ]
-                                                        )
+            "statement_id"  => fake_statement_id
+            ,"status"       => Dict("state" => "SUCCEEDED")
+            ,"manifest"     => Dict("truncated"         => false
+                                    ,"total_row_count"  => 2
+                                    ,"schema"           => Dict(
+                                        "columns"       => [
+                                            Dict("name" => "id")
+                                            ,Dict("name" => "name")
+                                            ]
+                                                                )
                                     )
-            ,"result"       => Dict("data_array" => [[Dict("str" => "1"), Dict("str" => "User234")]
-                                                    ,[Dict("str" => "2"), Dict("str" => "User345")]]
+            ,"result"       => Dict(
+                                    "external_links" => [
+                                        Dict(
+                                               "external_link"      => "http://127.0.0.1:8080/fake-external-data"
+                                               ,"next_chunk_index"  => nothing
+                                            )
+                                                        ]
                                     )
                     )
 
@@ -115,33 +125,48 @@ HTTP.register!(ROUTER
                 ,"/api/2.0/sql/statements"
                 ,req -> fake_response(fake_result))
 
+HTTP.register!(ROUTER
+                ,"GET"
+                ,"/api/2.0/sql/statements/$fake_statement_id"
+                ,req -> fake_response(fake_result))
+
+# External links
+HTTP.register!(ROUTER
+                ,"GET"
+                ,"/fake-external-data"
+                ,req -> HTTP.Response(
+                    200
+                    ,["Content-Type" => "application/json"]
+                    ,JSON3.write(fake_external_data)
+                ))
+
 server = HTTP.serve!(ROUTER, "127.0.0.1", 8080)
 
 ### Start Test
 @testset "BricksterClient" begin
-    
+
     ## Testing the string searches
     @testset "Compute matching regexes" begin
 
         @test occursin(Regex("serverless", "i"), "serverless Starter Warehouse")
         @test occursin(Regex("SERVERLESS", "i"), "serverless Starter Warehouse")
         @test !occursin(Regex("serverless", "i"), "SQL Pro Warehouse")
-        
+
     end
-    
+
     ## Testing the tuple comprehension
     @testset "Catalog matching tuples" begin
-        
+
         # Running tests to check
         @test fake_results_tuple.name == "catalog123"
         @test fake_results_tuple.owner == "user1"
         @test fake_results_tuple.created_by == "governance@fakedatabricks.net"
     end
-        
+
 
     ## Testing whether errors are thrown correctly
     @testset "Query_db function error tests" begin
-        
+
         # Fake data
         fake_db = BricksterClient(
             token           = fake_token
@@ -153,12 +178,12 @@ server = HTTP.serve!(ROUTER, "127.0.0.1", 8080)
 
         @test_throws ErrorException query_db(fake_db, fake_query, "dummycatalog", "fauxschema")
     end
-    
+
 end
 
 ### Testing the requests
 @testset "HTTP function tests" begin
-    
+
     ## Proper Ttesting of BricksterClient constructor
     @testset "BricksterClient constructor test" begin
             databricks_client = BricksterClient(fake_token, fake_url)
@@ -199,12 +224,12 @@ end
             databricks_client = BricksterClient(fake_token, fake_url)
             compute_connect(databricks_client, "Serverless")
 
-            # Creating DataFrame 
+            # Creating DataFrame
             df = query_db(databricks_client, fake_query, "fauxschema", "dummycatalog")
-            
+
             # Test
             @test df isa DataFrame
-        
+
     end
 
     # Closing the local server
