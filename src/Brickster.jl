@@ -62,7 +62,7 @@ end
 # Function to list all computes within a warehouse
 function list_computes(workspace :: BricksterClient)
     # Printing compute names
-    @printf("These are the available computes in your warehouse: %s", values(workspace.warehouse_map))
+    @printf("These are the available computes in your warehouse: %s \n", values(workspace.warehouse_map))
 
     # TODO: Create DataFrame or Vector of computes
 
@@ -85,11 +85,11 @@ function compute_connect(workspace :: BricksterClient
 
     # Catching if Fails
     if isnothing(compute_match_key)
-        error("No Matching Databricks Compute for: $compute_name")
+        error("No Matching Databricks Compute for: $compute_name \n")
 
     else
         workspace.compute = compute_match_key
-        @printf("This is the compute you selected %s", compute_match_key)
+        @printf("This is the compute you selected %s \n", compute_match_key)
     end
 
     # return updated struct
@@ -222,8 +222,9 @@ end
 
 function query_db(workspace :: BricksterClient
                     ,sql_query :: String
+                    ,catalog :: String
                     ,schema :: String
-                    ,catalog :: String)
+                    )
 
     # Error if No Compute
     if isnothing(workspace.compute)
@@ -232,12 +233,14 @@ function query_db(workspace :: BricksterClient
 
     # Params
     body = JSON3.write(Dict(
-        "statement"    => sql_query
-        ,"warehouse_id" => workspace.compute
-        ,"catalog"      => catalog
-        ,"schema"       => schema
-        ,"wait_timeout" => "30s"
-        ,"disposition"  => "INLINE"
+        "statement"         => sql_query
+        ,"warehouse_id"     => workspace.compute
+        ,"catalog"          => catalog
+        ,"schema"           => schema
+        ,"wait_timeout"     => "0s"
+        ,"on_wait_timeout"  => "CONTINUE"
+        ,"disposition"      => "EXTERNAL_LINKS"
+        ,"format"           => "JSON_ARRAY"
     ))
 
     # Sending the request to Databricks
@@ -245,28 +248,110 @@ function query_db(workspace :: BricksterClient
         "$(workspace.host_name)/api/2.0/sql/statements"
         ,workspace.header
         ,body
-
-    )
+        )
 
     # Parsing the results
     parsed_response = JSON3.read(response.body)
 
+    # Polling to get results
+    parsed_response = _query_db_poll_for_success(workspace, parsed_response.statement_id)
+
 
     ## Creating a DataFrame
-    # Getting columns
-    df_cols = [col[:name] for col in parsed_response[:manifest][:schema][:columns]]
+    # Checking if empty
+    if getproperty(parsed_response.manifest, :total_row_count) == 0
+        println("Query returned no results...")
+        return DataFrame()
 
-    # Getting the rows
-    df_rows = [
-        [_parse_field(field) for field in row] for row in parsed_response[:result][:data_array]
-                ]
-
-    # Creating the df
-    df = DataFrame([col => [row[i] for row in df_rows] for (i, col) in enumerate(df_cols)])
-
-    return df
-
+    else
+        return _query_db_lf(workspace, parsed_response.statement_id)
+    end
 end
 
+function _query_db_poll_for_success(workspace :: BricksterClient, statement_id :: String, interval :: Float64 = 2.0)
+    ### Starting the polling loop
+    while true
+
+        # Checking to see if the data is available for the query
+        poll_response = HTTP.get(
+            "$(workspace.host_name)/api/2.0/sql/statements/$statement_id"
+            ,workspace.header
+        )
+
+        ## Parsing the results
+        parsed_response = JSON3.read(poll_response.body)
+
+        # If we get a successful status, return data
+        if getproperty(parsed_response.status, :state) == "SUCCEEDED"
+                return parsed_response
+
+        # If it's still running, try again shortly
+        elseif getproperty(parsed_response.status, :state) in ("PENDING", "RUNNING")
+            @printf("Query still incomplete - waiting %ds...\n", interval)
+            sleep(interval)
+
+        # For failed, cancelled, or closed statuses
+        else
+            if haskey(parsed_response.status, :error)
+                error_message = parsed_response.status.error.message
+            else
+                error_message = "Query $(parsed_response.status.state) errored out without a message"
+            end
+            # Raising error
+            error(error_message)
+        end
+    end
+end
+
+function _query_db_lf(workspace :: BricksterClient, statement_id :: String)
+
+    # Params
+    data = []
+
+    # Going to completed request to grab 1st chunk
+    res = HTTP.get("$(workspace.host_name)/api/2.0/sql/statements/$statement_id"
+                                ,workspace.header)
+
+    parsed_response = JSON3.read(res.body)
+
+    # Need col names from first chunk header
+    df_cols = [col[:name] for col in parsed_response[:manifest][:schema][:columns]]
+
+    # Grabbing links for external data - MAKE A HELPER
+    for info in parsed_response.result.external_links
+        res_chunk = HTTP.get(info.external_link)
+        chunk_parsed = JSON3.read(res_chunk.body)
+
+        # Adding to list
+        append!(data, chunk_parsed)
+    end
+
+    ## Checking for more chunks
+    next_chunk = get(parsed_response.result, :next_chunk_index, nothing)
+
+    # If there are more chunks, grab them
+    while !isnothing(next_chunk)
+        chunk_res = HTTP.get("$(workspace.host_name)/api/2.0/sql/statements/$statement_id/result/chunks/$next_chunk"
+                            ,workspace.header
+                            )
+        chunk_parsed = JSON3.read(chunk_res.body)
+
+        # Creating list of data - MAKE A HELPER
+        for info in chunk_parsed.result.external_links
+            data_res = HTTP.get(info.external_link)
+            data_parsed = JSON3.read(data_res.body)
+            append!(data, data_parsed.data_array)
+        end
+
+        # Check if there's another chunk to exit loop
+        next_chunk = get(chunk_parsed.result, :next_chunk_index, nothing)
+    end
+
+    # Grabbing dataframe rows
+    df_rows = [[_parse_field(field) for field in row] for row in data]
+
+    return DataFrame([col => [row[i] for row in df_rows]
+                        for (i, col) in enumerate(df_cols) ])
+end
 
 end # Module end
