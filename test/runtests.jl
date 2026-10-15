@@ -184,7 +184,7 @@ end
 ### Testing the requests
 @testset "HTTP function tests" begin
 
-    ## Proper Ttesting of BricksterClient constructor
+    ## Proper Testing of BricksterClient constructor
     @testset "BricksterClient constructor test" begin
             databricks_client = BricksterClient(fake_token, fake_url)
 
