@@ -232,52 +232,91 @@ function query_db(workspace :: BricksterClient
     end
 
     ## Params
-    body_inline = JSON3.write(Dict(
-        "statement"         => sql_query
-        ,"warehouse_id"     => workspace.compute
-        ,"catalog"          => catalog
-        ,"schema"           => schema
-        ,"wait_timeout"     => "0s"
-        ,"on_wait_timeout"  => "CONTINUE"
-        ,"disposition"      => "INLINE"
-        ,"format"           => "JSON_ARRAY"
-    ))
-    
-    # If external links needed 
-    body_links = JSON3.write(Dict(
-        "statement"         => sql_query
-        ,"warehouse_id"     => workspace.compute
-        ,"catalog"          => catalog
-        ,"schema"           => schema
-        ,"wait_timeout"     => "0s"
-        ,"on_wait_timeout"  => "CONTINUE"
-        ,"disposition"      => "EXTERNAL_LINKS"
-        ,"format"           => "JSON_ARRAY"
-    ))
+    byte_lim = 25000000
+    # body = JSON3.write(Dict(
+    #     "statement"         => sql_query
+    #     ,"warehouse_id"     => workspace.compute
+    #     ,"catalog"          => catalog
+    #     ,"schema"           => schema
+    #     ,"wait_timeout"     => "0s"
+    #     ,"on_wait_timeout"  => "CONTINUE"
+    #     ,"disposition"      => "INLINE"
+    #     ,"format"           => "JSON_ARRAY"
+    #     ,"byte_limit"       => byte_lim
+    # ))
 
-    # Sending the request to Databricks
-    response = HTTP.post(
-        "$(workspace.host_name)/api/2.0/sql/statements"
-        ,workspace.header
-        ,body_links
-        )
+
+
+    ## Attempt 1: Testing whether inline will work
+    statement_id = _create_response(workspace, sql_query, catalog, schema, "INLINE"; byte_lim)
+    # response = HTTP.post(
+    #     "$(workspace.host_name)/api/2.0/sql/statements"
+    #     ,workspace.header
+    #     ,body
+    #     )
 
     # Parsing the results
-    parsed_response = JSON3.read(response.body)
+    # parsed_response = JSON3.read(response.body)
 
-    # Polling to get results
-    parsed_response = _query_db_poll_for_success(workspace, parsed_response.statement_id)
-
+    # Polling the response
+    parsed_response = _query_db_poll_for_success(workspace, statement_id)
 
     ## Creating a DataFrame
     # Checking if empty
     if getproperty(parsed_response.manifest, :total_row_count) == 0
         println("Query returned no results...")
         return DataFrame()
-
-    else
-        return _query_db_lf(workspace, parsed_response.statement_id)
     end
+
+    ## Checking if the results are truncated
+    if !get(parsed_response.manifest, :truncated, false)
+
+        # Read the data frame and return
+        df_cols = [col[:name] for col in parsed_response[:manifest][:schema][:columns]]
+        df_rows = [[_parse_field(field) for field in row] for row in parsed_response[:result][:data_array]]
+
+        return DataFrame([col => [row[i] for row in df_rows] for (i, col) in enumerate(df_cols)])
+
+    end
+
+        # If it's truncated, then create an external links request
+        # body = JSON3.write(Dict(
+        #     "statement"         => sql_query
+        #     ,"warehouse_id"     => workspace.compute
+        #     ,"catalog"          => catalog
+        #     ,"schema"           => schema
+        #     ,"wait_timeout"     => "0s"
+        #     ,"on_wait_timeout"  => "CONTINUE"
+        #     ,"disposition"      => "EXTERNAL_LINKS"
+        #     ,"format"           => "JSON_ARRAY"
+        # ))
+
+        # #  Sending the request to Databricks
+        # response = HTTP.post(
+        #     "$(workspace.host_name)/api/2.0/sql/statements"
+        #     ,workspace.header
+        #     ,body
+        #     )
+
+        ## Attempt 2: If external links needed
+        statement_id = _create_response(workspace, sql_query, catalog, schema, "EXTERNAL_LINKS")
+
+        # Parsing the results
+        # parsed_response = JSON3.read(response.body)
+
+        # Polling to get results
+        parsed_response = _query_db_poll_for_success(workspace, statement_id)
+
+
+        ## Creating a DataFrame
+        # # Checking if empty
+        # if getproperty(parsed_response.manifest, :total_row_count) == 0
+        #     println("Query returned no results...")
+        #     return DataFrame()
+
+            return _query_db_lf(workspace, parsed_response.statement_id)
+        end
+
 end
 
 function _query_db_poll_for_success(workspace :: BricksterClient, statement_id :: String, interval :: Float64 = 2.0)
@@ -364,6 +403,38 @@ function _query_db_lf(workspace :: BricksterClient, statement_id :: String)
 
     return DataFrame([col => [row[i] for row in df_rows]
                         for (i, col) in enumerate(df_cols) ])
+end
+
+function _create_response(workspace :: BricksterClient, query :: String, catalog :: String, schema :: String, disposition :: String; byte_lim = nothing)
+    ## Attributes
+    byte_lim = isnothing(byte_lim) || byte_lim
+
+    # Request body
+    params = JSON3.write(Dict(
+        "statement"         => query
+        ,"warehouse_id"     => workspace.compute
+        ,"catalog"          => catalog
+        ,"schema"           => schema
+        ,"wait_timeout"     => "0s"
+        ,"on_wait_timeout"  => "CONTINUE"
+        ,"disposition"      => disposition
+        ,"format"           => "JSON_ARRAY"
+        ,"byte_limit"       => byte_lim
+                    ))
+
+    ## Creating the request
+    response = HTTP.post(
+        "$(workspace.host_name)/api/2.0/sql/statements"
+        ,workspace.header
+        ,params
+        )
+    return JSON3.read(respose.body).statement_id
+end
+
+function _build_dataframe(cols, rows)
+    df_rows = [[_parse_field(field) for field in row] for row in data]
+    return DataFrame([col => [row[i] for row in rows]
+                        for (i, col) in enumerate(cols) ])
 end
 
 end # Module end
