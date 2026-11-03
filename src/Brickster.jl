@@ -231,8 +231,20 @@ function query_db(workspace :: BricksterClient
         error("No compute selected - please run compute_connect()")
     end
 
-    # Params
-    body = JSON3.write(Dict(
+    ## Params
+    body_inline = JSON3.write(Dict(
+        "statement"         => sql_query
+        ,"warehouse_id"     => workspace.compute
+        ,"catalog"          => catalog
+        ,"schema"           => schema
+        ,"wait_timeout"     => "0s"
+        ,"on_wait_timeout"  => "CONTINUE"
+        ,"disposition"      => "INLINE"
+        ,"format"           => "JSON_ARRAY"
+    ))
+    
+    # If external links needed 
+    body_links = JSON3.write(Dict(
         "statement"         => sql_query
         ,"warehouse_id"     => workspace.compute
         ,"catalog"          => catalog
@@ -247,7 +259,7 @@ function query_db(workspace :: BricksterClient
     response = HTTP.post(
         "$(workspace.host_name)/api/2.0/sql/statements"
         ,workspace.header
-        ,body
+        ,body_links
         )
 
     # Parsing the results
