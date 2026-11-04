@@ -305,8 +305,8 @@ function query_db(workspace :: BricksterClient
         # parsed_response = JSON3.read(response.body)
 
         # Polling to get results
+        @printf("\n Above byte_lim, about to poll for success with the following statement_id: %s", statement_id)
         parsed_response = _query_db_poll_for_success(workspace, statement_id)
-
 
         ## Creating a DataFrame
         # # Checking if empty
@@ -363,6 +363,7 @@ function _query_db_lf(workspace :: BricksterClient, statement_id :: String)
                                 ,workspace.header)
 
     parsed_response = JSON3.read(res.body)
+    @printf("\n This is the dict from the parsed_response: %s", parsed_response.result)
 
     # Need col names from first chunk header
     df_cols = [col[:name] for col in parsed_response[:manifest][:schema][:columns]]
