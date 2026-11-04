@@ -233,30 +233,9 @@ function query_db(workspace :: BricksterClient
 
     ## Params
     byte_lim = 25000000
-    # body = JSON3.write(Dict(
-    #     "statement"         => sql_query
-    #     ,"warehouse_id"     => workspace.compute
-    #     ,"catalog"          => catalog
-    #     ,"schema"           => schema
-    #     ,"wait_timeout"     => "0s"
-    #     ,"on_wait_timeout"  => "CONTINUE"
-    #     ,"disposition"      => "INLINE"
-    #     ,"format"           => "JSON_ARRAY"
-    #     ,"byte_limit"       => byte_lim
-    # ))
-
-
 
     ## Attempt 1: Testing whether inline will work
-    statement_id = _create_response(workspace, sql_query, catalog, schema, "INLINE"; byte_lim)
-    # response = HTTP.post(
-    #     "$(workspace.host_name)/api/2.0/sql/statements"
-    #     ,workspace.header
-    #     ,body
-    #     )
-
-    # Parsing the results
-    # parsed_response = JSON3.read(response.body)
+    statement_id = _create_response(workspace, sql_query, catalog, schema, "INLINE"; byte_limit  = byte_lim)
 
     # Polling the response
     parsed_response = _query_db_poll_for_success(workspace, statement_id)
@@ -279,25 +258,6 @@ function query_db(workspace :: BricksterClient
 
     end
 
-        # If it's truncated, then create an external links request
-        # body = JSON3.write(Dict(
-        #     "statement"         => sql_query
-        #     ,"warehouse_id"     => workspace.compute
-        #     ,"catalog"          => catalog
-        #     ,"schema"           => schema
-        #     ,"wait_timeout"     => "0s"
-        #     ,"on_wait_timeout"  => "CONTINUE"
-        #     ,"disposition"      => "EXTERNAL_LINKS"
-        #     ,"format"           => "JSON_ARRAY"
-        # ))
-
-        # #  Sending the request to Databricks
-        # response = HTTP.post(
-        #     "$(workspace.host_name)/api/2.0/sql/statements"
-        #     ,workspace.header
-        #     ,body
-        #     )
-
         ## Attempt 2: If external links needed
         statement_id = _create_response(workspace, sql_query, catalog, schema, "EXTERNAL_LINKS")
 
@@ -305,16 +265,9 @@ function query_db(workspace :: BricksterClient
         # parsed_response = JSON3.read(response.body)
 
         # Polling to get results
-        @printf("\n Above byte_lim, about to poll for success with the following statement_id: %s", statement_id)
         parsed_response = _query_db_poll_for_success(workspace, statement_id)
 
-        ## Creating a DataFrame
-        # # Checking if empty
-        # if getproperty(parsed_response.manifest, :total_row_count) == 0
-        #     println("Query returned no results...")
-        #     return DataFrame()
-
-            return _query_db_lf(workspace, parsed_response.statement_id)
+            return _query_db_lf(workspace, parsed_response)
 
 end
 
@@ -337,7 +290,7 @@ function _query_db_poll_for_success(workspace :: BricksterClient, statement_id :
 
         # If it's still running, try again shortly
         elseif getproperty(parsed_response.status, :state) in ("PENDING", "RUNNING")
-            @printf("Query still incomplete - waiting %ds...\n", interval)
+            @printf("Query still incomplete - waiting %.1fs...\n", interval)
             sleep(interval)
 
         # For failed, cancelled, or closed statuses
@@ -353,29 +306,57 @@ function _query_db_poll_for_success(workspace :: BricksterClient, statement_id :
     end
 end
 
-function _query_db_lf(workspace :: BricksterClient, statement_id :: String)
+"""
+    _fetch_rows(links)
+
+Downloads every row from the external s3 links 
+
+# Arguments
+- `links`: These are the external signed urls
+"""
+function _fetch_rows(links)
+    
+    ## Attributes
+    rows = []
+    for info in links
+
+        # Appending the rows to the list
+        append!(rows, JSON3.read(HTTP.get(info.external_link).body))
+    end
+
+    return rows
+
+end
+"""
+    _query_db_lf(workspace :: BricksterClient, parsed_response)
+
+This internal method
+"""
+function _query_db_lf(workspace :: BricksterClient, parsed_response)
 
     # Params
+    statement_id = parsed_response.statement_id
     data = []
 
-    # Going to completed request to grab 1st chunk
-    res = HTTP.get("$(workspace.host_name)/api/2.0/sql/statements/$statement_id"
-                                ,workspace.header)
+    # Catching cases when successful but no data - pretty frustrating error
+    if parsed_response.manifest.total_chunk_count == 0 || isempty(parsed_response.result)
+        error("Statement $statement_id succeeded but returned no chunks " *
+              "(rows=$(parsed_response.manifest.total_row_count), truncated=$(parsed_response.manifest.truncated))")
+    end
 
-    parsed_response = JSON3.read(res.body)
-    @printf("\n This is the dict from the parsed_response: %s", parsed_response.result)
+    # Grabbing links for external data - MAKE A HELPER
+    links = get(parsed_response.result, :external_links, nothing)
+
+    # Catching errors when there's no links but the result came back successful
+    if isnothing(links)
+        error("No external_links in parsed_response results. The following keys exist: $(keys(parsed_response.result))")
+    end
 
     # Need col names from first chunk header
     df_cols = [col[:name] for col in parsed_response[:manifest][:schema][:columns]]
 
-    # Grabbing links for external data - MAKE A HELPER
-    for info in parsed_response.result.external_links
-        res_chunk = HTTP.get(info.external_link)
-        chunk_parsed = JSON3.read(res_chunk.body)
-
-        # Adding to list
-        append!(data, chunk_parsed)
-    end
+    # Grabbing first chunk of data
+    data = _fetch_rows(links)
 
     ## Checking for more chunks
     next_chunk = get(parsed_response.result, :next_chunk_index, nothing)
@@ -388,14 +369,9 @@ function _query_db_lf(workspace :: BricksterClient, statement_id :: String)
         chunk_parsed = JSON3.read(chunk_res.body)
 
         # Creating list of data - MAKE A HELPER
-        for info in chunk_parsed.result.external_links
-            data_res = HTTP.get(info.external_link)
-            data_parsed = JSON3.read(data_res.body)
-            append!(data, data_parsed.data_array)
-        end
+        append!(data, _fetch_rows(chunk_parsed.external_links))
 
-        # Check if there's another chunk to exit loop
-        next_chunk = get(chunk_parsed.result, :next_chunk_index, nothing)
+        next_chunk = get(chunk_parsed, :next_chunk_index, nothing)
     end
 
     # Grabbing dataframe rows
@@ -405,12 +381,10 @@ function _query_db_lf(workspace :: BricksterClient, statement_id :: String)
                         for (i, col) in enumerate(df_cols) ])
 end
 
-function _create_response(workspace :: BricksterClient, query :: String, catalog :: String, schema :: String, disposition :: String; byte_lim = nothing)
+function _create_response(workspace :: BricksterClient, query :: String, catalog :: String, schema :: String, disposition :: String; byte_limit = nothing)
     ## Attributes
-    byte_lim = isnothing(byte_lim) || byte_lim
-
     # Request body
-    params = JSON3.write(Dict(
+    params = Dict{String,Any}(
         "statement"         => query
         ,"warehouse_id"     => workspace.compute
         ,"catalog"          => catalog
@@ -419,8 +393,15 @@ function _create_response(workspace :: BricksterClient, query :: String, catalog
         ,"on_wait_timeout"  => "CONTINUE"
         ,"disposition"      => disposition
         ,"format"           => "JSON_ARRAY"
-        ,"byte_limit"       => byte_lim
-                    ))
+                    )
+    
+    # Adding byte limit if it is not nothing
+    if !isnothing(byte_limit)
+        params["byte_limit"] = byte_limit 
+    end
+
+    # Transforming the dict to a json object
+    params = JSON3.write(params)
 
     ## Creating the request
     response = HTTP.post(
