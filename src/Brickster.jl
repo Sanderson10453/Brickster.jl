@@ -315,7 +315,6 @@ function query_db(workspace :: BricksterClient
         #     return DataFrame()
 
             return _query_db_lf(workspace, parsed_response.statement_id)
-        end
 
 end
 
@@ -428,7 +427,7 @@ function _create_response(workspace :: BricksterClient, query :: String, catalog
         ,workspace.header
         ,params
         )
-    return JSON3.read(respose.body).statement_id
+    return JSON3.read(response.body).statement_id
 end
 
 function _build_dataframe(cols, rows)
