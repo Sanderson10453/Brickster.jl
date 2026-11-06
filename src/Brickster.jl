@@ -18,7 +18,18 @@ Base.@kwdef mutable struct BricksterClient
     compute :: Union{String, Nothing} = nothing
 end
 
-# Function to fix dict parsing from JSON3
+"""
+    _parse_field(field)
+
+An internal method used to parse string and dict fields that
+are returned from the Databricks api
+
+# Arguments
+- `field`: This is the field that will be formatted
+
+# Returns
+- The values of the field as a string
+"""
 function _parse_field(field)
     if field isa JSON3.Object
         return field[:str]
@@ -32,7 +43,7 @@ function _parse_field(field)
 
 end
 
-# Function to get dict of all computes within a warehouse
+
 function BricksterClient(token, host_name)
 
     # Creating the headers for the request
@@ -59,7 +70,14 @@ function BricksterClient(token, host_name)
                     )
 end
 
-# Function to list all computes within a warehouse
+"""
+    list_computes(workspace :: BricksterClient)
+
+Lists the computes that exists in a workspace into the console
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+"""
 function list_computes(workspace :: BricksterClient)
     # Printing compute names
     @printf("These are the available computes in your warehouse: %s \n", values(workspace.warehouse_map))
@@ -68,6 +86,20 @@ function list_computes(workspace :: BricksterClient)
 
 end
 
+"""
+    compute_connect(workspace :: BricksterClient, compute_name :: String )
+
+This function connects to a specific compute within your workspace.
+It will update the workspace computer attribute
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+- `compute_name`: This is the string approximation of the compute you want to connect to. 
+                    If you are unsure, please use the list_computes function to see the available 
+                    computes.
+# Returns
+- An updated workspace with the selected compute
+"""
 function compute_connect(workspace :: BricksterClient
                         ,compute_name :: String )
 
@@ -97,7 +129,14 @@ function compute_connect(workspace :: BricksterClient
 
 end
 
-# List the catalogs within a workspace
+"""
+    list_catalogs(workspace :: BricksterClient, return_tuple :: Bool = false)
+
+This function will list the catalogs that are present in a workspace
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+"""
 function list_catalogs(workspace :: BricksterClient
                         ,return_tuple :: Bool = false)
 
@@ -134,7 +173,15 @@ function list_catalogs(workspace :: BricksterClient
 
 end
 
-# List the Schemas within a catalog
+"""
+    list_schemas(workspace :: BricksterClient, catalog :: String, return_tuple :: Bool = false)
+
+This function will list the schemas present within a catalog. 
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+- `catalog`: The name of the catalog that you want to list schemas from
+"""
 function list_schemas(workspace :: BricksterClient
                         ,catalog :: String
                         ,return_tuple :: Bool = false)
@@ -176,7 +223,21 @@ function list_schemas(workspace :: BricksterClient
 
 end
 
-# List the tables within a schema
+"""
+    list_tables(workspace :: BricksterClient
+                        ,catalog :: String
+                        ,schema :: String
+                        ,omit_properties :: Bool = true
+                        ,return_tuple :: Bool = true )
+
+This function will list the tables present within a schema. 
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+- `catalog`: The name of the catalog that you want to list schemas from
+- `schema`: The schema where you want to see the tables from
+- `omit_properties`: Default, true. This will hide the properties associated with the table
+"""
 function list_tables(workspace :: BricksterClient
                         ,catalog :: String
                         ,schema :: String
@@ -220,6 +281,25 @@ function list_tables(workspace :: BricksterClient
         end
 end
 
+"""
+    query_db(workspace :: BricksterClient
+                    ,sql_query :: String
+                    ,catalog :: String
+                    ,schema :: String
+                    )
+
+This function will pull data from a databricks table. It will try to pull the data inline
+before switching to use external links for large data pulls. The output will be a Julia DataFrame
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+- `sql_query`: The sql query for the data you want to pull
+- `catalog`: The catalog where you want to see the tables from
+- `schema`: The schema where you want to see the tables from
+
+# Returns
+- A DataFrame.jl dataframe
+"""
 function query_db(workspace :: BricksterClient
                     ,sql_query :: String
                     ,catalog :: String
@@ -271,6 +351,17 @@ function query_db(workspace :: BricksterClient
 
 end
 
+"""
+    _query_db_poll_for_success(workspace :: BricksterClient, statement_id :: String, interval :: Float64 = 2.0)
+
+This internal function will send GET request until the request has successfully completed. At this point,
+it will use the last statement_id to grab data.
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+- `statement_id`: The initial statement_id from your request
+- `interval`: The wait interval
+"""
 function _query_db_poll_for_success(workspace :: BricksterClient, statement_id :: String, interval :: Float64 = 2.0)
     ### Starting the polling loop
     while true
@@ -327,10 +418,18 @@ function _fetch_rows(links)
     return rows
 
 end
+
 """
     _query_db_lf(workspace :: BricksterClient, parsed_response)
 
-This internal method
+This internal function will get the results JSON from Databricks and turn it into a dataframe.
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+- `parsed_response`: The JSON3 object response
+
+# Returns
+- A DataFrame.jl dataframe
 """
 function _query_db_lf(workspace :: BricksterClient, parsed_response)
 
@@ -381,6 +480,20 @@ function _query_db_lf(workspace :: BricksterClient, parsed_response)
                         for (i, col) in enumerate(df_cols) ])
 end
 
+"""
+    _create_response(workspace :: BricksterClient, query :: String, catalog :: String, schema :: String, disposition :: String; byte_limit = nothing)
+
+This internal function will create the request params and then send them to get the initial response
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+- `query`: The query string used to pull data
+- `schema`: The schema we are pulling data from
+- `disposition`: Whether to use an INLINE or EXTERNAL_LINKS disposition for the request params
+
+# Returns
+- The response statement_id
+"""
 function _create_response(workspace :: BricksterClient, query :: String, catalog :: String, schema :: String, disposition :: String; byte_limit = nothing)
     ## Attributes
     # Request body
