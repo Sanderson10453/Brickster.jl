@@ -6,7 +6,7 @@ using DataFrames
 using Brickster
 
 ## Helper Function
-function fake_response(body :: Dict)
+function fake_response(body)
     return HTTP.Response(
         200
         ,["Content-Type" => "application/json"]
@@ -18,6 +18,8 @@ end
 fake_token = "token123"
 fake_url      = "http://127.0.0.1:8080"
 fake_query = "select * from dummycatalog.fauxschema.badtable limit 10"
+fake_columns = [Dict("name" => "id"), Dict("name" => "name")]
+fake_schema = Dict("columns" => fake_columns)
 
 # Warehouse
 fake_warehouse_pl = Dict(
@@ -63,6 +65,56 @@ fake_results_tuple = (
     ,created_by     = fake_catalog[:created_by]
                     )
 
+# Fake Statements - one for the inline, one for external links, one for succeeded but empty
+fake_statement = Dict(
+    "statement_inline"  => Dict(
+            "statement_id"  => "statement_inline"
+            ,"status"       => Dict("state" => "SUCCEEDED")
+            ,"manifest"     => Dict("truncated" => false
+                                    ,"total_row_count" => 2
+                                    ,"schema" => fake_schema)
+            ,"result"       => Dict("data_array" => [["1", "User234"], ["2", nothing]])
+                            )
+
+    ,"statementt_empty" => Dict(
+            "statement_id"  => "statementt_empty"
+            ,"status"       => Dict("state" => "SUCCEEDED")
+            ,"manifest"     => Dict("truncated" => false
+                                    ,"total_row_count" => 0
+                                    ,"schema" => fake_schema)
+            ,"result"       => Dict()
+                                )
+                                
+    ,"statement_truncated" => Dict(
+                "statement_id" => "statement_truncated"
+                ,"status"      => Dict("state" => "SUCCEEDED")
+                ,"manifest"    => Dict("truncated" => true
+                                        ,"total_row_count" => 1
+                                        ,"schema" => fake_schema)
+                ,"result"      => Dict("data_array" => [["1", "User234"]])
+                                )
+    ,"statement_external" => Dict(
+                "statement_id" => "statement_external"
+                ,"status"      => Dict("state" => "SUCCEEDED")
+                ,"manifest"    => Dict("truncated" => false
+                                        ,"total_row_count" => 3
+                                        ,"total_chunk_count" => 2
+                                        ,"schema" => fake_schema)
+                ,"result"      => Dict("external_links" => [Dict("external_link" => "$fake_url/fake-chunk-0")]
+                                    ,"next_chunk_index" => 1)
+                                )
+    ,"statement_failed" => Dict(
+                "statement_id" => "statement_failed"
+                ,"status"      => Dict("state" => "FAILED"
+                                        ,"error" => Dict("message" => "PARSE_SYNTAX_ERROR near select"))
+                                )
+)
+
+# Fake External links chunks
+fake_chunks = Dict(
+    "fake-chunk-0"  => [["1", "User234"], ["2", "User345"]]
+    ,"fake-chunk-1" => [["3", "User456"]]
+)
 
 # Fake Schema Payload
 fake_schemas_pl = Dict(
