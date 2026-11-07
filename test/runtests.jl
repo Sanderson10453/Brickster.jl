@@ -18,8 +18,6 @@ end
 fake_token = "token123"
 fake_url      = "http://127.0.0.1:8080"
 fake_query = "select * from dummycatalog.fauxschema.badtable limit 10"
-fake_columns = [Dict("name" => "id"), Dict("name" => "name")]
-fake_schema = Dict("columns" => fake_columns)
 
 # Warehouse
 fake_warehouse_pl = Dict(
@@ -55,17 +53,9 @@ fake_tables = Dict(
                         ]
 
                 )
-# Result
-fake_results_tuple = (
-    name            = fake_catalog[:name]
-    ,full_name      = fake_catalog[:full_name]
-    ,id             = fake_catalog[:id]
-    ,owner          = fake_catalog[:owner]
-    ,created_at     = fake_catalog[:created_at]
-    ,created_by     = fake_catalog[:created_by]
-                    )
-
 # Fake Statements - one for the inline, one for external links, one for succeeded but empty
+fake_columns = [Dict("name" => "id"), Dict("name" => "name")]
+fake_schema = Dict("columns" => fake_columns)
 fake_statement = Dict(
     "statement_inline"  => Dict(
             "statement_id"  => "statement_inline"
@@ -76,8 +66,8 @@ fake_statement = Dict(
             ,"result"       => Dict("data_array" => [["1", "User234"], ["2", nothing]])
                             )
 
-    ,"statementt_empty" => Dict(
-            "statement_id"  => "statementt_empty"
+    ,"statement_empty" => Dict(
+            "statement_id"  => "statement_empty"
             ,"status"       => Dict("state" => "SUCCEEDED")
             ,"manifest"     => Dict("truncated" => false
                                     ,"total_row_count" => 0
@@ -116,46 +106,6 @@ fake_chunks = Dict(
     ,"fake-chunk-1" => [["3", "User456"]]
 )
 
-# Fake Schema Payload
-fake_schemas_pl = Dict(
-                    "schemas" => [
-                        Dict(
-                            "name"          => "schema123"
-                            ,"full_name"    => "catalog123.schema123"
-                            ,"schema_id"     => "s123"
-                            ,"owner"        => "user1"
-                            ,"created_at"   => "2026-07-01"
-                            ,"created_by"   => "governance@fakedatabricks.net"
-                            )
-
-                                ]
-                        )
-
-# Fake HTTP payload
-fake_statement_id = "si123"
-fake_external_data = [["1", "User234"], ["2", "User345"]]
-fake_result = Dict(
-            "statement_id"  => fake_statement_id
-            ,"status"       => Dict("state" => "SUCCEEDED")
-            ,"manifest"     => Dict("truncated"         => false
-                                    ,"total_row_count"  => 2
-                                    ,"schema"           => Dict(
-                                        "columns"       => [
-                                            Dict("name" => "id")
-                                            ,Dict("name" => "name")
-                                            ]
-                                                                )
-                                    )
-            ,"result"       => Dict(
-                                    "external_links" => [
-                                        Dict(
-                                               "external_link"      => "http://127.0.0.1:8080/fake-external-data"
-                                               ,"next_chunk_index"  => nothing
-                                            )
-                                                        ]
-                                    )
-                    )
-
 ## Setting up HTTP to route through local server for testing
 const ROUTER = HTTP.Router()
 
@@ -165,32 +115,69 @@ HTTP.register!(ROUTER
                 ,"/api/2.0/sql/warehouses"
                 ,req -> fake_response(fake_warehouse_pl))
 
+# Catalogs api
+HTTP.register!(ROUTER
+                ,"GET"
+                ,"/api/2.1/unity-catalog/catalogs"
+                ,req -> fake_response(Dict("catalogs" => [fake_catalog])))
+
 # Schemas api
 HTTP.register!(ROUTER
                 ,"GET"
                 ,"/api/2.1/unity-catalog/schemas"
                 ,req -> fake_response(fake_schemas_pl))
 
+# Tables api
+HTTP.register!(ROUTER
+                ,"GET"
+                ,"/api/2.1/unity-catalog/tables"
+                ,req -> fake_response(fake_tables))
+
 # Query api
 HTTP.register!(ROUTER
                 ,"POST"
                 ,"/api/2.0/sql/statements"
-                ,req -> fake_response(fake_result))
+                ,req -> begin 
+                    body = JSON3.read(String(req.body))
+                    statement = body.statement
 
-HTTP.register!(ROUTER
-                ,"GET"
-                ,"/api/2.0/sql/statements/$fake_statement_id"
-                ,req -> fake_response(fake_result))
+                    id = if occursin("--empty", statement)
+                            "statement_empty"
 
-# External links
-HTTP.register!(ROUTER
-                ,"GET"
-                ,"/fake-external-data"
-                ,req -> HTTP.Response(
-                    200
-                    ,["Content-Type" => "application/json"]
-                    ,JSON3.write(fake_external_data)
-                ))
+                        elseif occursin("--failed", statement)
+                            "statement_failed"
+
+                        elseif occursin("--large", statement)
+                            body.disposition == "INLINE"  ? "statement_trunc" : "statement_ext"
+
+                        else 
+                            "statement_inline"
+
+                    end
+                
+                
+                fake_response(Dict("statement_id" => id
+                                    ,"status" => Dict("state" => "PENDING")))
+                end)
+
+# Test poll query 
+for (id, pl) in fake_statement
+    HTTP.register!(ROUTER
+                    ,"GET"
+                    ,"/api/2.0/sql/statements/$id"
+                    ,req -> fake_response(pl))
+end
+
+# Second chunk of external links
+ HTTP.register!(ROUTER
+                    ,"GET"
+                    ,"/api/2.0/sql/statements/statement_external/result/chunks/1"
+                    ,req -> fake_response(Dict("external_link" => [Dict("external_link" => "$fake_url/fake-chunk-1")])))
+
+for (name, rows) in fake_chunks
+    HTTP.register!(ROUTER, "GET", "/$name", req -> fake_response(rows))
+end
+
 
 server = HTTP.serve!(ROUTER, "127.0.0.1", 8080)
 
@@ -271,19 +258,41 @@ end
     end
 
     # Testing the query with fake requests
-    @testset "Query_db returns DF test" begin
-
-            databricks_client = BricksterClient(fake_token, fake_url)
-            compute_connect(databricks_client, "Serverless")
-
-            # Creating DataFrame
-            df = query_db(databricks_client, fake_query, "fauxschema", "dummycatalog")
-
-            # Test
+   @testset "Query_db tests" begin
+        client = BricksterClient(fake_token, fake_url)
+        compute_connect(client, "Serverless")
+ 
+        @testset "Testing inline result" begin
+            df = query_db(client, fake_query, "dummycatalog", "fauxschema")
+ 
             @test df isa DataFrame
-
+            @test names(df) == ["id", "name"]
+            @test size(df) == (2, 2)
+            @test df.id == ["1", "2"]
+            @test df.name[1] == "User234"
+            @test ismissing(df.name[2])
+        end
+ 
+        @testset "Test what happens with an empty result" begin
+            df = query_db(client, fake_query * " -- empty", "dummycatalog", "fauxschema")
+ 
+            @test df isa DataFrame
+            @test nrow(df) == 0
+        end
+ 
+        @testset "Test to ensure truncated inline falls back to external links disposition" begin
+            df = query_db(client, fake_query * " -- large", "dummycatalog", "fauxschema")
+ 
+            @test size(df) == (3, 2)
+            @test df.id == ["1", "2", "3"]
+            @test df.name == ["User234", "User345", "User456"]
+        end
+ 
+        @testset "Test that failed statement raises error" begin
+            @test_throws "PARSE_SYNTAX_ERROR" query_db(client, fake_query * " -- failed", "dummycatalog", "fauxschema")
+        end
     end
-
-    # Closing the local server
+    
+    # Close local server
     close(server)
 end
