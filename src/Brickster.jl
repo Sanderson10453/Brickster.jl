@@ -18,7 +18,18 @@ Base.@kwdef mutable struct BricksterClient
     compute :: Union{String, Nothing} = nothing
 end
 
-# Function to fix dict parsing from JSON3
+"""
+    _parse_field(field)
+
+An internal method used to parse string and dict fields that
+are returned from the Databricks api
+
+# Arguments
+- `field`: This is the field that will be formatted
+
+# Returns
+- The values of the field as a string
+"""
 function _parse_field(field)
     if field isa JSON3.Object
         return field[:str]
@@ -32,7 +43,7 @@ function _parse_field(field)
 
 end
 
-# Function to get dict of all computes within a warehouse
+
 function BricksterClient(token, host_name)
 
     # Creating the headers for the request
@@ -59,7 +70,14 @@ function BricksterClient(token, host_name)
                     )
 end
 
-# Function to list all computes within a warehouse
+"""
+    list_computes(workspace :: BricksterClient)
+
+Lists the computes that exists in a workspace into the console
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+"""
 function list_computes(workspace :: BricksterClient)
     # Printing compute names
     @printf("These are the available computes in your warehouse: %s \n", values(workspace.warehouse_map))
@@ -68,6 +86,20 @@ function list_computes(workspace :: BricksterClient)
 
 end
 
+"""
+    compute_connect(workspace :: BricksterClient, compute_name :: String )
+
+This function connects to a specific compute within your workspace.
+It will update the workspace computer attribute
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+- `compute_name`: This is the string approximation of the compute you want to connect to. 
+                    If you are unsure, please use the list_computes function to see the available 
+                    computes.
+# Returns
+- An updated workspace with the selected compute
+"""
 function compute_connect(workspace :: BricksterClient
                         ,compute_name :: String )
 
@@ -97,7 +129,14 @@ function compute_connect(workspace :: BricksterClient
 
 end
 
-# List the catalogs within a workspace
+"""
+    list_catalogs(workspace :: BricksterClient, return_tuple :: Bool = false)
+
+This function will list the catalogs that are present in a workspace
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+"""
 function list_catalogs(workspace :: BricksterClient
                         ,return_tuple :: Bool = false)
 
@@ -134,7 +173,15 @@ function list_catalogs(workspace :: BricksterClient
 
 end
 
-# List the Schemas within a catalog
+"""
+    list_schemas(workspace :: BricksterClient, catalog :: String, return_tuple :: Bool = false)
+
+This function will list the schemas present within a catalog. 
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+- `catalog`: The name of the catalog that you want to list schemas from
+"""
 function list_schemas(workspace :: BricksterClient
                         ,catalog :: String
                         ,return_tuple :: Bool = false)
@@ -176,7 +223,21 @@ function list_schemas(workspace :: BricksterClient
 
 end
 
-# List the tables within a schema
+"""
+    list_tables(workspace :: BricksterClient
+                        ,catalog :: String
+                        ,schema :: String
+                        ,omit_properties :: Bool = true
+                        ,return_tuple :: Bool = true )
+
+This function will list the tables present within a schema. 
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+- `catalog`: The name of the catalog that you want to list schemas from
+- `schema`: The schema where you want to see the tables from
+- `omit_properties`: Default, true. This will hide the properties associated with the table
+"""
 function list_tables(workspace :: BricksterClient
                         ,catalog :: String
                         ,schema :: String
@@ -220,6 +281,25 @@ function list_tables(workspace :: BricksterClient
         end
 end
 
+"""
+    query_db(workspace :: BricksterClient
+                    ,sql_query :: String
+                    ,catalog :: String
+                    ,schema :: String
+                    )
+
+This function will pull data from a databricks table. It will try to pull the data inline
+before switching to use external links for large data pulls. The output will be a Julia DataFrame
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+- `sql_query`: The sql query for the data you want to pull
+- `catalog`: The catalog where you want to see the tables from
+- `schema`: The schema where you want to see the tables from
+
+# Returns
+- A DataFrame.jl dataframe
+"""
 function query_db(workspace :: BricksterClient
                     ,sql_query :: String
                     ,catalog :: String
@@ -231,43 +311,57 @@ function query_db(workspace :: BricksterClient
         error("No compute selected - please run compute_connect()")
     end
 
-    # Params
-    body = JSON3.write(Dict(
-        "statement"         => sql_query
-        ,"warehouse_id"     => workspace.compute
-        ,"catalog"          => catalog
-        ,"schema"           => schema
-        ,"wait_timeout"     => "0s"
-        ,"on_wait_timeout"  => "CONTINUE"
-        ,"disposition"      => "EXTERNAL_LINKS"
-        ,"format"           => "JSON_ARRAY"
-    ))
+    ## Params
+    byte_lim = 25000000
 
-    # Sending the request to Databricks
-    response = HTTP.post(
-        "$(workspace.host_name)/api/2.0/sql/statements"
-        ,workspace.header
-        ,body
-        )
+    ## Attempt 1: Testing whether inline will work
+    statement_id = _create_response(workspace, sql_query, catalog, schema, "INLINE"; byte_limit  = byte_lim)
 
-    # Parsing the results
-    parsed_response = JSON3.read(response.body)
-
-    # Polling to get results
-    parsed_response = _query_db_poll_for_success(workspace, parsed_response.statement_id)
-
+    # Polling the response
+    parsed_response = _query_db_poll_for_success(workspace, statement_id)
 
     ## Creating a DataFrame
     # Checking if empty
     if getproperty(parsed_response.manifest, :total_row_count) == 0
         println("Query returned no results...")
         return DataFrame()
-
-    else
-        return _query_db_lf(workspace, parsed_response.statement_id)
     end
+
+    ## Checking if the results are truncated
+    if !get(parsed_response.manifest, :truncated, false)
+
+        # Read the data frame and return
+        df_cols = [col[:name] for col in parsed_response[:manifest][:schema][:columns]]
+        df_rows = [[_parse_field(field) for field in row] for row in parsed_response[:result][:data_array]]
+
+        return DataFrame([col => [row[i] for row in df_rows] for (i, col) in enumerate(df_cols)])
+
+    end
+
+        ## Attempt 2: If external links needed
+        statement_id = _create_response(workspace, sql_query, catalog, schema, "EXTERNAL_LINKS")
+
+        # Parsing the results
+        # parsed_response = JSON3.read(response.body)
+
+        # Polling to get results
+        parsed_response = _query_db_poll_for_success(workspace, statement_id)
+
+            return _query_db_lf(workspace, parsed_response)
+
 end
 
+"""
+    _query_db_poll_for_success(workspace :: BricksterClient, statement_id :: String, interval :: Float64 = 2.0)
+
+This internal function will send GET request until the request has successfully completed. At this point,
+it will use the last statement_id to grab data.
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+- `statement_id`: The initial statement_id from your request
+- `interval`: The wait interval
+"""
 function _query_db_poll_for_success(workspace :: BricksterClient, statement_id :: String, interval :: Float64 = 2.0)
     ### Starting the polling loop
     while true
@@ -287,7 +381,7 @@ function _query_db_poll_for_success(workspace :: BricksterClient, statement_id :
 
         # If it's still running, try again shortly
         elseif getproperty(parsed_response.status, :state) in ("PENDING", "RUNNING")
-            @printf("Query still incomplete - waiting %ds...\n", interval)
+            @printf("Query still incomplete - waiting %.1fs...\n", interval)
             sleep(interval)
 
         # For failed, cancelled, or closed statuses
@@ -303,28 +397,65 @@ function _query_db_poll_for_success(workspace :: BricksterClient, statement_id :
     end
 end
 
-function _query_db_lf(workspace :: BricksterClient, statement_id :: String)
+"""
+    _fetch_rows(links)
+
+Downloads every row from the external s3 links 
+
+# Arguments
+- `links`: These are the external signed urls
+"""
+function _fetch_rows(links)
+    
+    ## Attributes
+    rows = []
+    for info in links
+
+        # Appending the rows to the list
+        append!(rows, JSON3.read(HTTP.get(info.external_link).body))
+    end
+
+    return rows
+
+end
+
+"""
+    _query_db_lf(workspace :: BricksterClient, parsed_response)
+
+This internal function will get the results JSON from Databricks and turn it into a dataframe.
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+- `parsed_response`: The JSON3 object response
+
+# Returns
+- A DataFrame.jl dataframe
+"""
+function _query_db_lf(workspace :: BricksterClient, parsed_response)
 
     # Params
+    statement_id = parsed_response.statement_id
     data = []
 
-    # Going to completed request to grab 1st chunk
-    res = HTTP.get("$(workspace.host_name)/api/2.0/sql/statements/$statement_id"
-                                ,workspace.header)
+    # Catching cases when successful but no data - pretty frustrating error
+    if parsed_response.manifest.total_chunk_count == 0 || isempty(parsed_response.result)
+        error("Statement $statement_id succeeded but returned no chunks " *
+              "(rows=$(parsed_response.manifest.total_row_count), truncated=$(parsed_response.manifest.truncated))")
+    end
 
-    parsed_response = JSON3.read(res.body)
+    # Grabbing links for external data - MAKE A HELPER
+    links = get(parsed_response.result, :external_links, nothing)
+
+    # Catching errors when there's no links but the result came back successful
+    if isnothing(links)
+        error("No external_links in parsed_response results. The following keys exist: $(keys(parsed_response.result))")
+    end
 
     # Need col names from first chunk header
     df_cols = [col[:name] for col in parsed_response[:manifest][:schema][:columns]]
 
-    # Grabbing links for external data - MAKE A HELPER
-    for info in parsed_response.result.external_links
-        res_chunk = HTTP.get(info.external_link)
-        chunk_parsed = JSON3.read(res_chunk.body)
-
-        # Adding to list
-        append!(data, chunk_parsed)
-    end
+    # Grabbing first chunk of data
+    data = _fetch_rows(links)
 
     ## Checking for more chunks
     next_chunk = get(parsed_response.result, :next_chunk_index, nothing)
@@ -337,14 +468,9 @@ function _query_db_lf(workspace :: BricksterClient, statement_id :: String)
         chunk_parsed = JSON3.read(chunk_res.body)
 
         # Creating list of data - MAKE A HELPER
-        for info in chunk_parsed.result.external_links
-            data_res = HTTP.get(info.external_link)
-            data_parsed = JSON3.read(data_res.body)
-            append!(data, data_parsed.data_array)
-        end
+        append!(data, _fetch_rows(chunk_parsed.external_links))
 
-        # Check if there's another chunk to exit loop
-        next_chunk = get(chunk_parsed.result, :next_chunk_index, nothing)
+        next_chunk = get(chunk_parsed, :next_chunk_index, nothing)
     end
 
     # Grabbing dataframe rows
@@ -352,6 +478,57 @@ function _query_db_lf(workspace :: BricksterClient, statement_id :: String)
 
     return DataFrame([col => [row[i] for row in df_rows]
                         for (i, col) in enumerate(df_cols) ])
+end
+
+"""
+    _create_response(workspace :: BricksterClient, query :: String, catalog :: String, schema :: String, disposition :: String; byte_limit = nothing)
+
+This internal function will create the request params and then send them to get the initial response
+
+# Arguments
+- `workspace`: This is the workspace object created from BricksterClient
+- `query`: The query string used to pull data
+- `schema`: The schema we are pulling data from
+- `disposition`: Whether to use an INLINE or EXTERNAL_LINKS disposition for the request params
+
+# Returns
+- The response statement_id
+"""
+function _create_response(workspace :: BricksterClient, query :: String, catalog :: String, schema :: String, disposition :: String; byte_limit = nothing)
+    ## Attributes
+    # Request body
+    params = Dict{String,Any}(
+        "statement"         => query
+        ,"warehouse_id"     => workspace.compute
+        ,"catalog"          => catalog
+        ,"schema"           => schema
+        ,"wait_timeout"     => "0s"
+        ,"on_wait_timeout"  => "CONTINUE"
+        ,"disposition"      => disposition
+        ,"format"           => "JSON_ARRAY"
+                    )
+    
+    # Adding byte limit if it is not nothing
+    if !isnothing(byte_limit)
+        params["byte_limit"] = byte_limit 
+    end
+
+    # Transforming the dict to a json object
+    params = JSON3.write(params)
+
+    ## Creating the request
+    response = HTTP.post(
+        "$(workspace.host_name)/api/2.0/sql/statements"
+        ,workspace.header
+        ,params
+        )
+    return JSON3.read(response.body).statement_id
+end
+
+function _build_dataframe(cols, rows)
+    df_rows = [[_parse_field(field) for field in row] for row in data]
+    return DataFrame([col => [row[i] for row in rows]
+                        for (i, col) in enumerate(cols) ])
 end
 
 end # Module end
